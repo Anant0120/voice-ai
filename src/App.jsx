@@ -301,7 +301,6 @@ function App() {
                   className="send-btn"
                 >
                   Send
-                  Send
                 </button>
               </div>
               {error && <span className="error-message">{error}</span>}
