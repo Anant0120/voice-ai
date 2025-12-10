@@ -126,10 +126,6 @@ function App() {
             <p className="subtitle">Voice and Chat</p>
           </div>
         </div>
-        <div className="status">
-          <span className={`status-dot ${speaking ? 'speaking' : ''}`} />
-          {speaking ? 'Speaking' : 'Ready'}
-        </div>
       </header>
 
       <main className="main-content">
