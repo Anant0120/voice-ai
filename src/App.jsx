@@ -77,33 +77,15 @@ function App() {
         speak(botText).catch(() => {});
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Something went wrong';
-      const lower = msg.toLowerCase();
-      const isAbort =
-        lower.includes('abort') ||
-        lower.includes('cancel') ||
-        lower.includes('stopped');
-      if (isAbort) {
-        setError('');
-        return;
-      }
-
-      const friendlyNetwork =
-        lower.includes('failed to fetch') ||
-        lower.includes('network') ||
-        lower.includes('fetch') ||
-        lower.includes('timeout');
-
-      const friendly = friendlyNetwork
-        ? 'Network issue. Please check connection and try again.'
-        : '';
-
-      if (friendly) {
-        setError(friendly);
-      } else {
-        // Keep silent for other stops/errors
-        setError('');
-      }
+      const fallbackText =
+        "I’m having a hiccup answering that right now, but I’m still here—want to try a shorter version or a different question?";
+      const botMessage = {
+        role: 'assistant',
+        text: fallbackText,
+        id: `${Date.now()}-bot-fallback`,
+      };
+      setMessages((prev) => [...prev, botMessage]);
+      setError('');
     } finally {
       setIsSending(false);
     }

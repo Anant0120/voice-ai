@@ -11,6 +11,41 @@ function useElevenLabsTTS() {
   const audioRef = useRef(null);
   const visemeQueueRef = useRef([]);
   const currentVisemeTimeoutRef = useRef(null);
+  const synthRef = useRef(
+    typeof window !== 'undefined' && 'speechSynthesis' in window
+      ? window.speechSynthesis
+      : null
+  );
+
+  const browserSpeak = useCallback(
+    (text) =>
+      new Promise((resolve) => {
+        const synth = synthRef.current;
+        if (!synth || !text || !text.trim()) {
+          resolve();
+          return;
+        }
+        try {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.onend = () => {
+            setSpeaking(false);
+            resolve();
+          };
+          utterance.onerror = () => {
+            setSpeaking(false);
+            resolve();
+          };
+          setViseme(null);
+          setSpeaking(true);
+          synth.cancel();
+          synth.speak(utterance);
+        } catch (e) {
+          setSpeaking(false);
+          resolve();
+        }
+      }),
+    []
+  );
 
   const cleanup = useCallback(() => {
     if (audioRef.current) {
@@ -29,7 +64,7 @@ function useElevenLabsTTS() {
 
   const speak = useCallback(
     (text) =>
-      new Promise((resolve, reject) => {
+      new Promise((resolve) => {
         if (!text || !text.trim()) {
           resolve();
           return;
@@ -53,9 +88,7 @@ function useElevenLabsTTS() {
 
         
         if (!ELEVENLABS_API_KEY || ELEVENLABS_API_KEY.length < 10) {
-          console.error('❌ ElevenLabs API key is missing or invalid!');
-          console.error('Please create a .env file with: VITE_ELEVENLABS_API_KEY=your_key_here');
-          reject(new Error('ElevenLabs API key not configured. Please check your .env file.'));
+          browserSpeak(text).finally(resolve);
           return;
         }
 
@@ -103,11 +136,15 @@ function useElevenLabsTTS() {
                 }
               }
               
-              throw new Error(errorMessage);
+              // Use browser TTS fallback silently
+              await browserSpeak(text);
+              resolve();
+              return null;
             }
             return response.blob();
           })
           .then((blob) => {
+            if (!blob) return;
             const audioUrl = URL.createObjectURL(blob);
             const audio = new Audio(audioUrl);
             audioRef.current = audio;
@@ -171,14 +208,14 @@ function useElevenLabsTTS() {
               resolve();
             };
 
-            audio.onerror = (error) => {
+            audio.onerror = () => {
               clearInterval(visemeIntervalId);
               if (currentVisemeTimeoutRef.current) {
                 clearTimeout(currentVisemeTimeoutRef.current);
               }
               cleanup();
               URL.revokeObjectURL(audioUrl);
-              reject(error);
+              browserSpeak(text).finally(resolve);
             };
 
             audio.play().catch((error) => {
@@ -188,15 +225,15 @@ function useElevenLabsTTS() {
               }
               cleanup();
               URL.revokeObjectURL(audioUrl);
-              reject(error);
+              browserSpeak(text).finally(resolve);
             });
           })
-          .catch((error) => {
+          .catch(() => {
             cleanup();
-            reject(error);
+            browserSpeak(text).finally(resolve);
           });
       }),
-    [cleanup]
+    [cleanup, browserSpeak]
   );
 
   const cancel = useCallback(() => {
