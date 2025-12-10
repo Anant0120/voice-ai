@@ -58,7 +58,11 @@ function App() {
       cancel(); 
       
       
-      const botText = await callLLM(question);
+      const rawBotText = await callLLM(question);
+      const botText =
+        rawBotText && rawBotText.trim().length > 0
+          ? rawBotText
+          : "I didn’t get a full answer, but I’m here—want to ask that another way?";
       
       const botMessage = {
         role: 'assistant',
@@ -67,8 +71,10 @@ function App() {
       };
 
       setMessages((prev) => [...prev, botMessage]);
+      setIsSending(false); // stop showing sending state as soon as text is ready
       if (activeTab !== 'chat') {
-        await speak(botText);
+        // Fire-and-forget TTS to avoid blocking UI; red stop can still cancel
+        speak(botText).catch(() => {});
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Something went wrong';
@@ -81,13 +87,23 @@ function App() {
         setError('');
         return;
       }
-      setError(msg);
-      const errMessage = {
-        role: 'assistant',
-        text: `I hit an error: ${msg}`,
-        id: `${Date.now()}-error`,
-      };
-      setMessages((prev) => [...prev, errMessage]);
+
+      const friendlyNetwork =
+        lower.includes('failed to fetch') ||
+        lower.includes('network') ||
+        lower.includes('fetch') ||
+        lower.includes('timeout');
+
+      const friendly = friendlyNetwork
+        ? 'Network issue. Please check connection and try again.'
+        : '';
+
+      if (friendly) {
+        setError(friendly);
+      } else {
+        // Keep silent for other stops/errors
+        setError('');
+      }
     } finally {
       setIsSending(false);
     }
@@ -182,7 +198,7 @@ function App() {
                   disabled={!canSend}
                   className="send-btn"
                 >
-                  {isSending ? 'Sending…' : 'Send'}
+                  Send
                 </button>
                 {speaking && (
                   <button
