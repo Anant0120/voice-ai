@@ -8,46 +8,36 @@ const ELEVENLABS_VOICE_ID =
 function useElevenLabsTTS() {
   const [viseme, setViseme] = useState(null);
   const [speaking, setSpeaking] = useState(false);
+  const [error, setError] = useState(null);
   const audioRef = useRef(null);
   const visemeQueueRef = useRef([]);
   const currentVisemeTimeoutRef = useRef(null);
+  const browserTTSCancelIntervalRef = useRef(null);
+  const postCancelIntervalRef = useRef(null);
+  const elevenLabsActiveRef = useRef(false);
+  const originalSpeakRef = useRef(null);
   const synthRef = useRef(
     typeof window !== 'undefined' && 'speechSynthesis' in window
       ? window.speechSynthesis
       : null
   );
 
-  const browserSpeak = useCallback(
-    (text) =>
-      new Promise((resolve) => {
-        const synth = synthRef.current;
-        if (!synth || !text || !text.trim()) {
-          resolve();
-          return;
-        }
-        try {
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.onend = () => {
-            setSpeaking(false);
-            resolve();
-          };
-          utterance.onerror = () => {
-            setSpeaking(false);
-            resolve();
-          };
-          setViseme(null);
-          setSpeaking(true);
-          synth.cancel();
-          synth.speak(utterance);
-        } catch (e) {
-          setSpeaking(false);
-          resolve();
-        }
-      }),
-    []
-  );
+  // Block browser TTS permanently in avatar tab - no fallback
+  const blockBrowserTTS = useCallback(() => {
+    if (synthRef.current && originalSpeakRef.current === null) {
+      // Store original speak method
+      originalSpeakRef.current = synthRef.current.speak.bind(synthRef.current);
+      // Override speak to ALWAYS block it in avatar tab (no fallback)
+      synthRef.current.speak = function(utterance) {
+        // Always block browser TTS in avatar tab - no exceptions
+        console.log('🚫 Blocked browser TTS - Avatar tab uses ElevenLabs only');
+        return;
+      };
+    }
+  }, []);
 
-  const cleanup = useCallback(() => {
+
+  const cleanup = useCallback((isCancel = false) => {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -57,9 +47,24 @@ function useElevenLabsTTS() {
       clearTimeout(currentVisemeTimeoutRef.current);
       currentVisemeTimeoutRef.current = null;
     }
+    if (browserTTSCancelIntervalRef.current) {
+      clearInterval(browserTTSCancelIntervalRef.current);
+      browserTTSCancelIntervalRef.current = null;
+    }
+    if (postCancelIntervalRef.current) {
+      clearInterval(postCancelIntervalRef.current);
+      postCancelIntervalRef.current = null;
+    }
+    // Never restore browser TTS in avatar tab - keep it blocked permanently
+    // Browser TTS is only for voice tab
+    // Cancel any browser TTS (only used as fallback when ElevenLabs fails)
+    if (synthRef.current) {
+      synthRef.current.cancel();
+    }
     visemeQueueRef.current = [];
     setViseme(null);
     setSpeaking(false);
+    setError(null);
   }, []);
 
   const speak = useCallback(
@@ -71,6 +76,17 @@ function useElevenLabsTTS() {
         }
 
         cleanup();
+        
+        // Clear any previous errors
+        setError(null);
+        
+        // Cancel any browser TTS before starting ElevenLabs (browser TTS is ONLY used as fallback when ElevenLabs fails)
+        if (synthRef.current) {
+          synthRef.current.cancel();
+        }
+        
+        // Block browser TTS when ElevenLabs is starting
+        blockBrowserTTS();
 
         // ElevenLabs TTS API with viseme streaming
         const url = `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}/stream`;
@@ -88,7 +104,9 @@ function useElevenLabsTTS() {
 
         
         if (!ELEVENLABS_API_KEY || ELEVENLABS_API_KEY.length < 10) {
-          browserSpeak(text).finally(resolve);
+          // No API key - show error message
+          setError("ElevenLabs API key is missing. You can use the Voice or Chat tab instead.");
+          resolve();
           return;
         }
 
@@ -107,37 +125,27 @@ function useElevenLabsTTS() {
           .then(async (response) => {
             if (!response.ok) {
               // Get error details from response
-              let errorMessage = `ElevenLabs API error: ${response.status}`;
+              let errorDetail = '';
               try {
                 const errorData = await response.json();
                 if (errorData.detail?.message) {
-                  errorMessage += ` - ${errorData.detail.message}`;
+                  errorDetail = errorData.detail.message.toLowerCase();
                 }
               } catch (e) {
                 // Ignore JSON parse errors
               }
               
-              if (response.status === 401) {
-                errorMessage += '\n\n💡 401 Unauthorized - How to fix:\n';
-                
-                // Check if it's a permission issue
-                if (errorMessage.includes('missing the permission text_to_speech')) {
-                  errorMessage += '   ⚠️  Your API key is missing the "text_to_speech" permission!\n';
-                  errorMessage += '   📝 Steps to fix:\n';
-                  errorMessage += '      1. Go to: https://elevenlabs.io/app/settings/api-keys\n';
-                  errorMessage += '      2. Find your API key (or create a new one)\n';
-                  errorMessage += '      3. Make sure "Text to Speech" permission is ENABLED\n';
-                  errorMessage += '      4. Save and restart your dev server\n';
-                } else {
-                  errorMessage += '   • Your API key is invalid or expired\n';
-                  errorMessage += '   • The API key doesn\'t have access to this voice\n';
-                  errorMessage += '   • Check your .env file: VITE_ELEVENLABS_API_KEY=your_key\n';
-                  errorMessage += '   • Get a new key from: https://elevenlabs.io/app/settings/api-keys';
-                }
+              // API error - show user-friendly message
+              if (response.status === 429 || response.status === 402 || 
+                  errorDetail.includes('quota') || errorDetail.includes('credit') || 
+                  errorDetail.includes('limit') || errorDetail.includes('subscription')) {
+                // Rate limit or payment issue (likely free credits exhausted)
+                setError("ElevenLabs free credits are over. You can use the Voice or Chat tab instead.");
+              } else if (response.status === 401) {
+                setError("ElevenLabs API key is invalid. You can use the Voice or Chat tab instead.");
+              } else {
+                setError("ElevenLabs service is unavailable. You can use the Voice or Chat tab instead.");
               }
-              
-              // Use browser TTS fallback silently
-              await browserSpeak(text);
               resolve();
               return null;
             }
@@ -145,6 +153,20 @@ function useElevenLabsTTS() {
           })
           .then((blob) => {
             if (!blob) return;
+            // Cancel any browser TTS before playing ElevenLabs audio (browser TTS is ONLY fallback)
+            if (synthRef.current) {
+              synthRef.current.cancel();
+            }
+            
+            // Mark ElevenLabs as active - this will block browser TTS via the overridden speak method
+            elevenLabsActiveRef.current = true;
+            // Also continuously cancel browser TTS while ElevenLabs is playing (extra safety)
+            browserTTSCancelIntervalRef.current = setInterval(() => {
+              if (synthRef.current) {
+                synthRef.current.cancel();
+              }
+            }, 100); // Cancel every 100ms to prevent any browser TTS from starting
+            
             const audioUrl = URL.createObjectURL(blob);
             const audio = new Audio(audioUrl);
             audioRef.current = audio;
@@ -203,6 +225,32 @@ function useElevenLabsTTS() {
                 clearTimeout(currentVisemeTimeoutRef.current);
               }
               setViseme(0); // Reset to silence
+              
+              // Keep blocking browser TTS for 5 seconds after ElevenLabs completes
+              // This prevents any browser TTS from triggering after ElevenLabs finishes
+              let cancelCount = 0;
+              postCancelIntervalRef.current = setInterval(() => {
+                if (synthRef.current) {
+                  synthRef.current.cancel();
+                }
+                cancelCount++;
+                if (cancelCount >= 50) { // 50 * 100ms = 5 seconds
+                  clearInterval(postCancelIntervalRef.current);
+                  postCancelIntervalRef.current = null;
+                  // Mark ElevenLabs as no longer active
+                  // Don't restore browser TTS - keep it blocked permanently in avatar tab
+                  elevenLabsActiveRef.current = false;
+                }
+              }, 100);
+              
+              // Also cancel immediately
+              if (synthRef.current) {
+                synthRef.current.cancel();
+              }
+              
+              // Don't restore browser TTS immediately - keep blocking for 5 seconds
+              // elevenLabsActiveRef stays true during the blocking period
+              
               cleanup();
               URL.revokeObjectURL(audioUrl);
               resolve();
@@ -213,9 +261,11 @@ function useElevenLabsTTS() {
               if (currentVisemeTimeoutRef.current) {
                 clearTimeout(currentVisemeTimeoutRef.current);
               }
+              // Audio error - show user-friendly message
+              setError("ElevenLabs audio failed to load. You can use the Voice or Chat tab instead.");
               cleanup();
               URL.revokeObjectURL(audioUrl);
-              browserSpeak(text).finally(resolve);
+              resolve();
             };
 
             audio.play().catch((error) => {
@@ -223,28 +273,37 @@ function useElevenLabsTTS() {
               if (currentVisemeTimeoutRef.current) {
                 clearTimeout(currentVisemeTimeoutRef.current);
               }
+              // Play error - show user-friendly message
+              setError("ElevenLabs audio failed to play. You can use the Voice or Chat tab instead.");
               cleanup();
               URL.revokeObjectURL(audioUrl);
-              browserSpeak(text).finally(resolve);
+              resolve();
             });
           })
-          .catch(() => {
+          .catch((error) => {
+            // Fetch error - show user-friendly message
+            setError("ElevenLabs service is unavailable. You can use the Voice or Chat tab instead.");
             cleanup();
-            browserSpeak(text).finally(resolve);
+            resolve();
           });
       }),
-    [cleanup, browserSpeak]
+    [cleanup, blockBrowserTTS]
   );
 
   const cancel = useCallback(() => {
-    cleanup();
+    cleanup(true); // Pass true to indicate manual cancellation
   }, [cleanup]);
 
   useEffect(() => {
-    return cleanup;
-  }, [cleanup]);
+    // Initialize browser TTS blocking on mount - keep it blocked permanently in avatar tab
+    blockBrowserTTS();
+    return () => {
+      cleanup();
+      // Don't restore browser TTS - keep it blocked
+    };
+  }, [cleanup, blockBrowserTTS]);
 
-  return { viseme, speaking, speak, cancel };
+  return { viseme, speaking, speak, cancel, error };
 }
 
 // Enhanced phoneme-to-viseme mapping with better accuracy

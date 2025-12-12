@@ -21,7 +21,7 @@ function App() {
   const [error, setError] = useState('');
   const listRef = useRef(null);
 
-  const { viseme, speaking, speak, cancel } = useElevenLabsTTS();
+  const { viseme, speaking, speak, cancel, error: elevenLabsError } = useElevenLabsTTS();
   const {
     isListening: voiceListening,
     isSpeaking: voiceSpeaking,
@@ -43,6 +43,26 @@ function App() {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [messages]);
+
+  // Show ElevenLabs error messages in avatar tab
+  useEffect(() => {
+    if (elevenLabsError && activeTab === 'avatar') {
+      const errorMessage = {
+        role: 'assistant',
+        text: elevenLabsError,
+        id: `${Date.now()}-elevenlabs-error`,
+      };
+      setMessages((prev) => {
+        // Check if this error message already exists to avoid duplicates
+        const exists = prev.some(msg => msg.id === errorMessage.id || 
+          (msg.role === 'assistant' && msg.text === elevenLabsError));
+        if (!exists) {
+          return [...prev, errorMessage];
+        }
+        return prev;
+      });
+    }
+  }, [elevenLabsError, activeTab]);
 
   const handleSend = async () => {
     if (!canSend) return;
